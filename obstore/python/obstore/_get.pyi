@@ -1,4 +1,4 @@
-from datetime import datetime
+get_ranges_asyncfrom datetime import datetime
 from typing import List, Sequence, Tuple, TypedDict
 
 from ._attributes import Attributes
@@ -289,6 +289,14 @@ def get_ranges(
 async def get_ranges_async(
     store: ObjectStore, path: str, starts: Sequence[int], ends: Sequence[int]
 ) -> List[Buffer]:
+    """Call `get_ranges` asynchronously.
+
+    Refer to the documentation for [get_ranges][obstore.get_ranges].
+    """
+
+async def get_ranges_unordered_async(
+    store: ObjectStore, path: str, starts: Sequence[int], ends: Sequence[int]
+) -> AsyncIterator[Buffer]:
     """Call `get_ranges` asynchronously.
 
     Refer to the documentation for [get_ranges][obstore.get_ranges].

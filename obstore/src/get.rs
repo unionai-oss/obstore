@@ -4,6 +4,7 @@ use std::sync::Arc;
 use arrow::buffer::Buffer;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use futures::stream;
 use futures::stream::{BoxStream, Fuse};
 use futures::StreamExt;
 use object_store::{GetOptions, GetRange, GetResult, ObjectStore};
@@ -13,6 +14,7 @@ use pyo3::types::PyBytes;
 use pyo3_arrow::buffer::PyArrowBuffer;
 use pyo3_object_store::{PyObjectStore, PyObjectStoreError, PyObjectStoreResult};
 use tokio::sync::Mutex;
+use futures::TryStreamExt;
 
 use crate::attributes::PyAttributes;
 use crate::list::PyObjectMeta;
@@ -445,3 +447,114 @@ pub(crate) fn get_ranges_async(
             .collect::<Vec<_>>())
     })
 }
+
+
+// Define a custom struct to represent the async iterator
+#[pyclass]
+struct RangeStreamer {
+    store: Arc<PyObjectStore>,
+    path: String,
+    ranges: Vec<std::ops::Range<usize>>,
+    chunk_size: usize,
+    max_concurrent_downloads: usize,
+}
+
+#[pymethods]
+impl RangeStreamer {
+    #[new]
+    fn new(
+        store: PyObjectStore,
+        path: String,
+        starts: Vec<usize>,
+        ends: Vec<usize>,
+        chunk_size: usize,
+        max_concurrent_downloads: usize,
+    ) -> Self {
+        // Convert starts and ends into ranges
+        let ranges: Vec<_> = starts
+            .into_iter()
+            .zip(ends)
+            .map(|(start, end)| start..end)
+            .collect();
+
+        RangeStreamer {
+            store: Arc::new(store),
+            path: path,
+            ranges,
+            chunk_size,
+            max_concurrent_downloads,
+        }
+    }
+
+    // Make the object an async iterable
+    fn __aiter__(slf: PyRef<Self>) -> PyRef<Self> {
+        slf
+    }
+
+    // Make the object an async iterator
+    fn __anext__(&mut self, py: Python) -> PyResult<Bound<PyAny>> {
+        let path = self.path.clone();
+        let ranges = self.ranges.clone();
+        let chunk_size = self.chunk_size;
+        let max_concurrent_downloads = self.max_concurrent_downloads;
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            // Split each range into chunks of size `chunk_size`
+            let fetch_ranges: Vec<_> = ranges
+                .into_iter()
+                .flat_map(|range| {
+                    let mut chunks = Vec::new();
+                    let mut start = range.start;
+                    while start < range.end {
+                        let end = std::cmp::min(start + chunk_size, range.end);
+                        chunks.push(start..end);
+                        start = end;
+                    }
+                    chunks
+                })
+                .collect();
+
+            // Define the fetch function for each chunk
+            let fetch = |range: std::ops::Range<usize>| {
+                async move {
+                    self.store
+                        .as_ref()
+                        .get_range(&path.into(), range.start..range.end)
+                        .await
+                        .map_err(PyObjectStoreError::ObjectStoreError)
+                }
+            };
+
+            // Fetch all chunks in parallel, respecting the concurrency limit
+            let fetched: Vec<_> = stream::iter(fetch_ranges.into_iter().map(fetch))
+                .buffered(max_concurrent_downloads)
+                .try_collect()
+                .await?;
+
+            // Concatenate chunks for each range and yield the result
+            let mut current_range_chunks = Vec::new();
+            for chunk in fetched {
+                current_range_chunks.extend(chunk);
+                // If we've collected all chunks for a range, concatenate and yield
+                if current_range_chunks.len() >= chunk_size {
+                    let concatenated = Bytes::from(current_range_chunks);
+                    let arrow_buf = concatenated.into();
+                    return Ok(Some(PyArrowBuffer::new(Buffer::from_bytes(arrow_buf))));
+                }
+            }
+
+            // Yield any remaining chunks
+            if !current_range_chunks.is_empty() {
+                let concatenated = Bytes::from(current_range_chunks);
+                return Ok(Some(PyArrowBuffer::new(Buffer::from_bytes(concatenated.into())).into()));
+            }
+
+            // Signal the end of iteration
+            Ok(None)
+        })
+    }
+}
+
+
+// TODO look at https://github.com/apache/arrow-rs/blob/d0260fcffa07a4cb8650cc290ab29027a3a8e65c/object_store/src/util.rs#L52
+// https://github.com/apache/arrow-rs/blob/d0260fcffa07a4cb8650cc290ab29027a3a8e65c/object_store/src/util.rs#L95
