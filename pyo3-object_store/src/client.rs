@@ -1,57 +1,55 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use object_store::{ClientConfigKey, ClientOptions};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
+use pyo3::types::PyString;
 
+use crate::config::PyConfigValue;
 use crate::error::PyObjectStoreError;
 
 /// A wrapper around `ClientConfigKey` that implements [`FromPyObject`].
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PyClientConfigKey(ClientConfigKey);
 
 impl<'py> FromPyObject<'py> for PyClientConfigKey {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         let s = ob.extract::<PyBackedStr>()?.to_lowercase();
-        let key = ClientConfigKey::from_str(&s).map_err(PyObjectStoreError::ObjectStoreError)?;
+        let key = s.parse().map_err(PyObjectStoreError::ObjectStoreError)?;
         Ok(Self(key))
     }
 }
 
-/// A wrapper around `String` used to store values for the ClientConfig. This allows Python `True`
-/// and `False` as well as `str`. A Python `True` becomes `"true"` and a Python `False` becomes
-/// `"false"`.
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct PyClientConfigValue(String);
+impl<'py> IntoPyObject<'py> for PyClientConfigKey {
+    type Target = PyString;
+    type Output = Bound<'py, PyString>;
+    type Error = PyErr;
 
-impl<'py> FromPyObject<'py> for PyClientConfigValue {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(val) = ob.extract::<bool>() {
-            Ok(Self(val.to_string()))
-        } else {
-            Ok(Self(ob.extract()?))
-        }
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(PyString::new(py, self.0.as_ref()))
+    }
+}
+
+impl<'py> IntoPyObject<'py> for &PyClientConfigKey {
+    type Target = PyString;
+    type Output = Bound<'py, PyString>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(PyString::new(py, self.0.as_ref()))
     }
 }
 
 /// A wrapper around `ClientOptions` that implements [`FromPyObject`].
-#[derive(Debug)]
-pub struct PyClientOptions(ClientOptions);
-
-impl<'py> FromPyObject<'py> for PyClientOptions {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let py_input = ob.extract::<HashMap<PyClientConfigKey, String>>()?;
-        let mut options = ClientOptions::new();
-        for (key, value) in py_input.into_iter() {
-            options = options.with_config(key.0, value);
-        }
-        Ok(Self(options))
-    }
-}
+#[derive(Clone, Debug, FromPyObject, IntoPyObject, IntoPyObjectRef, PartialEq)]
+pub struct PyClientOptions(HashMap<PyClientConfigKey, PyConfigValue>);
 
 impl From<PyClientOptions> for ClientOptions {
     fn from(value: PyClientOptions) -> Self {
-        value.0
+        let mut options = ClientOptions::new();
+        for (key, value) in value.0.into_iter() {
+            options = options.with_config(key.0, value.0);
+        }
+        options
     }
 }

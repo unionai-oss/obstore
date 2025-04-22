@@ -1,19 +1,20 @@
+from collections.abc import Sequence
 from datetime import datetime
-from typing import List, Sequence, Tuple, TypedDict
+from typing import TypedDict
 
 from ._attributes import Attributes
-from ._buffer import Buffer
+from ._bytes import Bytes
 from ._list import ObjectMeta
 from .store import ObjectStore
 
 class OffsetRange(TypedDict):
-    """Request all bytes starting from a given byte offset"""
+    """Request all bytes starting from a given byte offset."""
 
     offset: int
     """The byte offset for the offset range request."""
 
 class SuffixRange(TypedDict):
-    """Request up to the last `n` bytes"""
+    """Request up to the last `n` bytes."""
 
     suffix: int
     """The number of bytes from the suffix to request."""
@@ -28,11 +29,8 @@ class GetOptions(TypedDict, total=False):
     """
     Request will succeed if the `ObjectMeta::e_tag` matches
     otherwise returning [`PreconditionError`][obstore.exceptions.PreconditionError].
-
     See <https://datatracker.ietf.org/doc/html/rfc9110#name-if-match>
-
     Examples:
-
     ```text
     If-Match: "xyzzy"
     If-Match: "xyzzy", "r2d2xxxx", "c3piozzzz"
@@ -44,11 +42,8 @@ class GetOptions(TypedDict, total=False):
     """
     Request will succeed if the `ObjectMeta::e_tag` does not match
     otherwise returning [`NotModifiedError`][obstore.exceptions.NotModifiedError].
-
     See <https://datatracker.ietf.org/doc/html/rfc9110#section-13.1.2>
-
     Examples:
-
     ```text
     If-None-Match: "xyzzy"
     If-None-Match: "xyzzy", "r2d2xxxx", "c3piozzzz"
@@ -59,7 +54,6 @@ class GetOptions(TypedDict, total=False):
     if_unmodified_since: datetime | None
     """
     Request will succeed if the object has been modified since
-
     <https://datatracker.ietf.org/doc/html/rfc9110#section-13.1.3>
     """
 
@@ -67,37 +61,27 @@ class GetOptions(TypedDict, total=False):
     """
     Request will succeed if the object has not been modified since
     otherwise returning [`PreconditionError`][obstore.exceptions.PreconditionError].
-
     Some stores, such as S3, will only return `NotModified` for exact
     timestamp matches, instead of for any timestamp greater than or equal.
-
     <https://datatracker.ietf.org/doc/html/rfc9110#section-13.1.4>
     """
 
-    range: Tuple[int, int] | List[int] | OffsetRange | SuffixRange
+    range: tuple[int, int] | list[int] | OffsetRange | SuffixRange
     """
     Request transfer of only the specified range of bytes
     otherwise returning [`NotModifiedError`][obstore.exceptions.NotModifiedError].
-
     The semantics of this tuple are:
-
     - `(int, int)`: Request a specific range of bytes `(start, end)`.
-
         If the given range is zero-length or starts after the end of the object, an
         error will be returned. Additionally, if the range ends after the end of the
         object, the entire remainder of the object will be returned. Otherwise, the
         exact requested range will be returned.
-
         The `end` offset is _exclusive_.
-
     - `{"offset": int}`: Request all bytes starting from a given byte offset.
-
         This is equivalent to `bytes={int}-` as an HTTP header.
-
     - `{"suffix": int}`: Request the last `int` bytes. Note that here, `int` is _the
         size of the request_, not the byte offset. This is equivalent to `bytes=-{int}`
         as an HTTP header.
-
     <https://datatracker.ietf.org/doc/html/rfc9110#name-range>
     """
 
@@ -109,7 +93,6 @@ class GetOptions(TypedDict, total=False):
     head: bool
     """
     Request transfer of no content
-
     <https://datatracker.ietf.org/doc/html/rfc9110#name-head>
     """
 
@@ -150,14 +133,18 @@ class GetResult:
         This must be accessed _before_ calling `stream`, `bytes`, or `bytes_async`.
         """
 
-    def bytes(self) -> bytes:
-        """
-        Collects the data into bytes
+    def bytes(self) -> Bytes:
+        """Collect the data into a `Bytes` object.
+
+        This implements the Python buffer protocol. You can copy the buffer to Python
+        memory by passing to [`bytes`][].
         """
 
-    async def bytes_async(self) -> bytes:
-        """
-        Collects the data into bytes
+    async def bytes_async(self) -> Bytes:
+        """Collect the data into a `Bytes` object.
+
+        This implements the Python buffer protocol. You can copy the buffer to Python
+        memory by passing to [`bytes`][].
         """
 
     @property
@@ -168,38 +155,63 @@ class GetResult:
         """
 
     @property
-    def range(self) -> Tuple[int, int]:
+    def range(self) -> tuple[int, int]:
         """The range of bytes returned by this request.
+
+        Note that this is `(start, stop)` **not** `(start, length)`.
 
         This must be accessed _before_ calling `stream`, `bytes`, or `bytes_async`.
         """
 
     def stream(self, min_chunk_size: int = 10 * 1024 * 1024) -> BytesStream:
-        """Return a chunked stream over the result's bytes.
+        r"""Return a chunked stream over the result's bytes.
 
         Args:
             min_chunk_size: The minimum size in bytes for each chunk in the returned
                 `BytesStream`. All chunks except for the last chunk will be at least
-                this size. Defaults to 10*1024*1024 (10MB).
+                this size. Defaults to 10\*1024\*1024 (10MB).
 
         Returns:
             A chunked stream
+
         """
 
     def __aiter__(self) -> BytesStream:
-        """
-        Return a chunked stream over the result's bytes with the default (10MB) chunk
-        size.
+        """Return a chunked stream over the result's bytes.
+
+        Uses the default (10MB) chunk size.
         """
 
     def __iter__(self) -> BytesStream:
-        """
-        Return a chunked stream over the result's bytes with the default (10MB) chunk
-        size.
+        """Return a chunked stream over the result's bytes.
+
+        Uses the default (10MB) chunk size.
         """
 
 class BytesStream:
-    """An async stream of bytes."""
+    """An async stream of bytes.
+
+    !!! note "Request timeouts"
+        The underlying stream needs to stay alive until the last chunk is polled. If the
+        file is large, it may exceed the default timeout of 30 seconds. In this case,
+        you may see an error like:
+
+        ```
+        GenericError: Generic {
+            store: "HTTP",
+            source: reqwest::Error {
+                kind: Decode,
+                source: reqwest::Error {
+                    kind: Body,
+                    source: TimedOut,
+                },
+            },
+        }
+        ```
+
+        To fix this, set the `timeout` parameter in the
+        [`client_options`][obstore.store.ClientConfig] passed when creating the store.
+    """
 
     def __aiter__(self) -> BytesStream:
         """Return `Self` as an async iterator."""
@@ -207,14 +219,19 @@ class BytesStream:
     def __iter__(self) -> BytesStream:
         """Return `Self` as an async iterator."""
 
+    # Note: this returns bytes, not Bytes
     async def __anext__(self) -> bytes:
         """Return the next chunk of bytes in the stream."""
 
+    # Note: this returns bytes, not Bytes
     def __next__(self) -> bytes:
         """Return the next chunk of bytes in the stream."""
 
 def get(
-    store: ObjectStore, path: str, *, options: GetOptions | None = None
+    store: ObjectStore,
+    path: str,
+    *,
+    options: GetOptions | None = None,
 ) -> GetResult:
     """Return the bytes that are stored at the specified location.
 
@@ -225,19 +242,29 @@ def get(
 
     Returns:
         GetResult
+
     """
 
 async def get_async(
-    store: ObjectStore, path: str, *, options: GetOptions | None = None
+    store: ObjectStore,
+    path: str,
+    *,
+    options: GetOptions | None = None,
 ) -> GetResult:
     """Call `get` asynchronously.
 
     Refer to the documentation for [get][obstore.get].
     """
 
-def get_range(store: ObjectStore, path: str, start: int, end: int) -> Buffer:
-    """
-    Return the bytes that are stored at the specified location in the given byte range.
+def get_range(
+    store: ObjectStore,
+    path: str,
+    *,
+    start: int,
+    end: int | None = None,
+    length: int | None = None,
+) -> Bytes:
+    """Return the bytes that are stored at the specified location in the given byte range.
 
     If the given range is zero-length or starts after the end of the object, an error
     will be returned. Additionally, if the range ends after the end of the object, the
@@ -247,48 +274,70 @@ def get_range(store: ObjectStore, path: str, start: int, end: int) -> Buffer:
     Args:
         store: The ObjectStore instance to use.
         path: The path within ObjectStore to retrieve.
+
+    Keyword Args:
         start: The start of the byte range.
-        end: The end of the byte range (exclusive).
+        end: The end of the byte range (exclusive). Either `end` or `length` must be non-None.
+        length: The number of bytes of the byte range. Either `end` or `length` must be non-None.
 
     Returns:
-        A `Buffer` object implementing the Python buffer protocol, allowing
+        A `Bytes` object implementing the Python buffer protocol, allowing
             zero-copy access to the underlying memory provided by Rust.
+
     """
 
 async def get_range_async(
-    store: ObjectStore, path: str, start: int, end: int
-) -> Buffer:
+    store: ObjectStore,
+    path: str,
+    *,
+    start: int,
+    end: int | None = None,
+    length: int | None = None,
+) -> Bytes:
     """Call `get_range` asynchronously.
 
     Refer to the documentation for [get_range][obstore.get_range].
     """
 
 def get_ranges(
-    store: ObjectStore, path: str, starts: Sequence[int], ends: Sequence[int]
-) -> List[Buffer]:
-    """
-    Return the bytes that are stored at the specified location in the given byte ranges
+    store: ObjectStore,
+    path: str,
+    *,
+    starts: Sequence[int],
+    ends: Sequence[int] | None = None,
+    lengths: Sequence[int] | None = None,
+) -> list[Bytes]:
+    """Return the bytes stored at the specified location in the given byte ranges.
 
     To improve performance this will:
 
-    - Combine ranges less than 10MB apart into a single call to `fetch`
+    - Transparently combine ranges less than 1MB apart into a single underlying request
     - Make multiple `fetch` requests in parallel (up to maximum of 10)
 
     Args:
         store: The ObjectStore instance to use.
         path: The path within ObjectStore to retrieve.
+
+    Other Args:
         starts: A sequence of `int` where each offset starts.
-        ends: A sequence of `int` where each offset ends (exclusive).
+        ends: A sequence of `int` where each offset ends (exclusive). Either `ends` or `lengths` must be non-None.
+        lengths: A sequence of `int` with the number of bytes of each byte range. Either `ends` or `lengths` must be non-None.
 
     Returns:
-        A sequence of `Buffer`, one for each range. This `Buffer` object implements the
+        A sequence of `Bytes`, one for each range. This `Bytes` object implements the
             Python buffer protocol, allowing zero-copy access to the underlying memory
             provided by Rust.
+
     """
 
 async def get_ranges_async(
-    store: ObjectStore, path: str, starts: Sequence[int], ends: Sequence[int]
-) -> List[Buffer]:
+    store: ObjectStore,
+    path: str,
+    *,
+    starts: Sequence[int],
+    ends: Sequence[int] | None = None,
+    lengths: Sequence[int] | None = None,
+) -> list[Bytes]:
     """Call `get_ranges` asynchronously.
 
     Refer to the documentation for [get_ranges][obstore.get_ranges].

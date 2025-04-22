@@ -1,6 +1,6 @@
-from typing import Sequence
+from collections.abc import Sequence
 
-from .store import ObjectStore
+from ._store import ObjectStore
 
 def delete(store: ObjectStore, paths: str | Sequence[str]) -> None:
     """Delete the object at the specified location(s).
@@ -16,6 +16,7 @@ def delete(store: ObjectStore, paths: str | Sequence[str]) -> None:
             depending on the behavior of the underlying store. For example, local
             filesystems, GCP, and Azure return an error, while S3 and in-memory will
             return Ok.
+
     """
 
 async def delete_async(store: ObjectStore, paths: str | Sequence[str]) -> None:

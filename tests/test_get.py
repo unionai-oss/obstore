@@ -1,6 +1,5 @@
 import pytest
 
-import obstore as obs
 from obstore.store import MemoryStore
 
 
@@ -10,8 +9,8 @@ def test_stream_sync():
     data = b"the quick brown fox jumps over the lazy dog," * 5000
     path = "big-data.txt"
 
-    obs.put(store, path, data)
-    resp = obs.get(store, path)
+    store.put(path, data)
+    resp = store.get(path)
     stream = resp.stream(min_chunk_size=0)
 
     # Note: it looks from manual testing that with the local store we're only getting
@@ -32,8 +31,8 @@ async def test_stream_async():
     data = b"the quick brown fox jumps over the lazy dog," * 5000
     path = "big-data.txt"
 
-    await obs.put_async(store, path, data)
-    resp = await obs.get_async(store, path)
+    await store.put_async(path, data)
+    resp = await store.get_async(path)
     stream = resp.stream(min_chunk_size=0)
 
     # Note: it looks from manual testing that with the local store we're only getting
@@ -53,15 +52,15 @@ def test_get_with_options():
     data = b"the quick brown fox jumps over the lazy dog," * 100
     path = "big-data.txt"
 
-    obs.put(store, path, data)
+    store.put(path, data)
 
-    result = obs.get(store, path, options={"range": (5, 10)})
+    result = store.get(path, options={"range": (5, 10)})
     assert result.range == (5, 10)
     buf = result.bytes()
     assert buf == data[5:10]
 
     # Test list input
-    result = obs.get(store, path, options={"range": [5, 10]})
+    result = store.get(path, options={"range": [5, 10]})
     assert result.range == (5, 10)
     buf = result.bytes()
     assert buf == data[5:10]
@@ -73,9 +72,9 @@ def test_get_with_options_offset():
     data = b"the quick brown fox jumps over the lazy dog," * 100
     path = "big-data.txt"
 
-    obs.put(store, path, data)
+    store.put(path, data)
 
-    result = obs.get(store, path, options={"range": {"offset": 100}})
+    result = store.get(path, options={"range": {"offset": 100}})
     result_range = result.range
     assert result_range == (100, 4400)
     buf = result.bytes()
@@ -88,9 +87,9 @@ def test_get_with_options_suffix():
     data = b"the quick brown fox jumps over the lazy dog," * 100
     path = "big-data.txt"
 
-    obs.put(store, path, data)
+    store.put(path, data)
 
-    result = obs.get(store, path, options={"range": {"suffix": 100}})
+    result = store.get(path, options={"range": {"suffix": 100}})
     result_range = result.range
     assert result_range == (4300, 4400)
     buf = result.bytes()
@@ -103,8 +102,12 @@ def test_get_range():
     data = b"the quick brown fox jumps over the lazy dog," * 100
     path = "big-data.txt"
 
-    obs.put(store, path, data)
-    buffer = obs.get_range(store, path, 5, 15)
+    store.put(path, data)
+    buffer = store.get_range(path, start=5, end=15)
+    view = memoryview(buffer)
+    assert view == data[5:15]
+
+    buffer = store.get_range(path, start=5, length=10)
     view = memoryview(buffer)
     assert view == data[5:15]
 
@@ -115,10 +118,53 @@ def test_get_ranges():
     data = b"the quick brown fox jumps over the lazy dog," * 100
     path = "big-data.txt"
 
-    obs.put(store, path, data)
+    store.put(path, data)
+
     starts = [5, 10, 15, 20]
     ends = [15, 20, 25, 30]
-    buffers = obs.get_ranges(store, path, starts, ends)
+    buffers = store.get_ranges(path, starts=starts, ends=ends)
 
+    # set strict=True when we upgrade to 3.10
     for start, end, buffer in zip(starts, ends, buffers):
         assert memoryview(buffer) == data[start:end]
+
+    lengths = [10, 10, 10, 10]
+    buffers = store.get_ranges(path, starts=starts, lengths=lengths)
+
+    # set strict=True when we upgrade to 3.10
+    for start, end, buffer in zip(starts, ends, buffers):
+        assert memoryview(buffer) == data[start:end]
+
+
+def test_get_range_invalid_range():
+    store = MemoryStore()
+
+    data = b"the quick brown fox jumps over the lazy dog," * 100
+    path = "big-data.txt"
+    store.put(path, data)
+
+    with pytest.raises(ValueError, match="Invalid range"):
+        store.get_range(path, start=10, end=10)
+
+    with pytest.raises(ValueError, match="Invalid range"):
+        store.get_range(path, start=10, end=8)
+
+    with pytest.raises(ValueError, match="Invalid range"):
+        store.get_range(path, start=10, length=0)
+
+
+def test_get_ranges_invalid_range():
+    store = MemoryStore()
+
+    data = b"the quick brown fox jumps over the lazy dog," * 100
+    path = "big-data.txt"
+    store.put(path, data)
+
+    with pytest.raises(ValueError, match="Invalid range"):
+        store.get_ranges(path, starts=[10], ends=[10])
+
+    with pytest.raises(ValueError, match="Invalid range"):
+        store.get_ranges(path, starts=[10, 20], ends=[18, 18])
+
+    with pytest.raises(ValueError, match="Invalid range"):
+        store.get_ranges(path, starts=[10, 20], lengths=[10, 0])

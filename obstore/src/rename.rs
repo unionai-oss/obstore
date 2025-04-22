@@ -3,9 +3,10 @@ use pyo3::prelude::*;
 use pyo3_object_store::{PyObjectStore, PyObjectStoreError, PyObjectStoreResult};
 
 use crate::runtime::get_runtime;
+use crate::utils::PyNone;
 
 #[pyfunction]
-#[pyo3(signature = (store, from_, to, *, overwrite = true))]
+#[pyo3(signature = (store, from_, to, *, overwrite=true))]
 pub(crate) fn rename(
     py: Python,
     store: PyObjectStore,
@@ -28,7 +29,7 @@ pub(crate) fn rename(
 }
 
 #[pyfunction]
-#[pyo3(signature = (store, from_, to, *, overwrite = true))]
+#[pyo3(signature = (store, from_, to, *, overwrite=true))]
 pub(crate) fn rename_async(
     py: Python,
     store: PyObjectStore,
@@ -45,6 +46,6 @@ pub(crate) fn rename_async(
             store.as_ref().rename_if_not_exists(&from_, &to)
         };
         fut.await.map_err(PyObjectStoreError::ObjectStoreError)?;
-        Ok(())
+        Ok(PyNone)
     })
 }

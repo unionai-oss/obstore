@@ -6,6 +6,9 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::vec::IntoIter;
 use arrow::buffer::Buffer;
+use std::ops::Range;
+use std::sync::Arc;
+
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::stream::{BoxStream, Buffered, Fuse, Iter};
@@ -15,6 +18,7 @@ use pyo3::exceptions::{PyStopAsyncIteration, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyIterator};
 use pyo3_arrow::buffer::PyArrowBuffer;
+use pyo3_bytes::PyBytes;
 use pyo3_object_store::{PyObjectStore, PyObjectStoreError, PyObjectStoreResult};
 use tokio::sync::Mutex;
 
@@ -76,6 +80,7 @@ impl From<PyGetOptions> for GetOptions {
             range: value.range.map(|inner| inner.0),
             version: value.version,
             head: value.head,
+            extensions: Default::default(),
         }
     }
 }
@@ -83,7 +88,7 @@ impl From<PyGetOptions> for GetOptions {
 #[derive(FromPyObject)]
 pub(crate) struct PyOffsetRange {
     #[pyo3(item)]
-    offset: usize,
+    offset: u64,
 }
 
 impl From<PyOffsetRange> for GetRange {
@@ -95,7 +100,7 @@ impl From<PyOffsetRange> for GetRange {
 #[derive(FromPyObject)]
 pub(crate) struct PySuffixRange {
     #[pyo3(item)]
-    suffix: usize,
+    suffix: u64,
 }
 
 impl From<PySuffixRange> for GetRange {
@@ -114,16 +119,13 @@ pub(crate) struct PyGetRange(GetRange);
 // - {"suffix": usize} to request the last `n` bytes
 impl<'py> FromPyObject<'py> for PyGetRange {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(bounded) = ob.extract::<[usize; 2]>() {
+        if let Ok(bounded) = ob.extract::<[u64; 2]>() {
             Ok(Self(GetRange::Bounded(bounded[0]..bounded[1])))
         } else if let Ok(offset_range) = ob.extract::<PyOffsetRange>() {
             Ok(Self(offset_range.into()))
         } else if let Ok(suffix_range) = ob.extract::<PySuffixRange>() {
             Ok(Self(suffix_range.into()))
         } else {
-            // dbg!(ob);
-            // let x = ob.extract::<PyOffsetRange>()?;
-            // dbg!(x.offset);
             Err(PyValueError::new_err("Unexpected input for byte range.\nExpected two-integer tuple or list, or dict with 'offset' or 'suffix' key." ))
         }
     }
@@ -140,7 +142,7 @@ impl PyGetResult {
 
 #[pymethods]
 impl PyGetResult {
-    fn bytes(&self, py: Python) -> PyObjectStoreResult<PyBytesWrapper> {
+    fn bytes(&self, py: Python) -> PyObjectStoreResult<PyBytes> {
         let get_result = self
             .0
             .lock()
@@ -150,7 +152,7 @@ impl PyGetResult {
         let runtime = get_runtime(py)?;
         py.allow_threads(|| {
             let bytes = runtime.block_on(get_result.bytes())?;
-            Ok::<_, PyObjectStoreError>(PyBytesWrapper::new(bytes))
+            Ok::<_, PyObjectStoreError>(PyBytes::new(bytes))
         })
     }
 
@@ -166,7 +168,7 @@ impl PyGetResult {
                 .bytes()
                 .await
                 .map_err(PyObjectStoreError::ObjectStoreError)?;
-            Ok(PyBytesWrapper::new(bytes))
+            Ok(PyBytes::new(bytes))
         })
     }
 
@@ -189,7 +191,7 @@ impl PyGetResult {
     }
 
     #[getter]
-    fn range(&self) -> PyResult<(usize, usize)> {
+    fn range(&self) -> PyResult<(u64, u64)> {
         let inner = self.0.lock().unwrap();
         let range = &inner
             .as_ref()
@@ -242,11 +244,12 @@ async fn next_stream(
 ) -> PyResult<PyBytesWrapper> {
     let mut stream = stream.lock().await;
     let mut buffers: Vec<Bytes> = vec![];
+    let mut total_buffer_len = 0;
     loop {
         match stream.next().await {
             Some(Ok(bytes)) => {
+                total_buffer_len += bytes.len();
                 buffers.push(bytes);
-                let total_buffer_len = buffers.iter().fold(0, |acc, buf| acc + buf.len());
                 if total_buffer_len >= min_chunk_size {
                     return Ok(PyBytesWrapper::new_multiple(buffers));
                 }
@@ -294,14 +297,10 @@ impl PyBytesStream {
     }
 }
 
-pub(crate) struct PyBytesWrapper(Vec<Bytes>);
+struct PyBytesWrapper(Vec<Bytes>);
 
 impl PyBytesWrapper {
-    pub fn new(buf: Bytes) -> Self {
-        Self(vec![buf])
-    }
-
-    pub fn new_multiple(buffers: Vec<Bytes>) -> Self {
+    fn new_multiple(buffers: Vec<Bytes>) -> Self {
         Self(buffers)
     }
 }
@@ -310,7 +309,7 @@ impl PyBytesWrapper {
 //  support the buffer protocol in the future (e.g. for get_range) you may need to have a separate
 //  wrapper of Bytes
 impl<'py> IntoPyObject<'py> for PyBytesWrapper {
-    type Target = PyBytes;
+    type Target = pyo3::types::PyBytes;
     type Output = Bound<'py, Self::Target>;
     type Error = PyErr;
 
@@ -319,7 +318,7 @@ impl<'py> IntoPyObject<'py> for PyBytesWrapper {
 
         // Copy all internal Bytes objects into a single PyBytes
         // Since our inner callback is infallible, this will only panic on out of memory
-        PyBytes::new_with(py, total_len, |target| {
+        pyo3::types::PyBytes::new_with(py, total_len, |target| {
             let mut offset = 0;
             for buf in self.0.iter() {
                 target[offset..offset + buf.len()].copy_from_slice(buf);
@@ -331,7 +330,7 @@ impl<'py> IntoPyObject<'py> for PyBytesWrapper {
 }
 
 #[pyfunction]
-#[pyo3(signature = (store, path, *, options = None))]
+#[pyo3(signature = (store, path, *, options=None))]
 pub(crate) fn get(
     py: Python,
     store: PyObjectStore,
@@ -352,7 +351,7 @@ pub(crate) fn get(
 }
 
 #[pyfunction]
-#[pyo3(signature = (store, path, *, options = None))]
+#[pyo3(signature = (store, path, *, options=None))]
 pub(crate) fn get_async(
     py: Python,
     store: PyObjectStore,
@@ -372,78 +371,88 @@ pub(crate) fn get_async(
 }
 
 #[pyfunction]
+#[pyo3(signature = (store, path, *, start, end=None, length=None))]
 pub(crate) fn get_range(
     py: Python,
     store: PyObjectStore,
     path: String,
-    start: usize,
-    end: usize,
-) -> PyObjectStoreResult<PyArrowBuffer> {
+    start: u64,
+    end: Option<u64>,
+    length: Option<u64>,
+) -> PyObjectStoreResult<pyo3_bytes::PyBytes> {
     let runtime = get_runtime(py)?;
+    let range = params_to_range(start, end, length)?;
     py.allow_threads(|| {
-        let out = runtime.block_on(
-            store.as_ref()
-            .get_range(&path.into(), start..end)
-        )?;
-        Ok::<_, PyObjectStoreError>(PyArrowBuffer::new(Buffer::from_bytes(out.into())))
+        let out = runtime.block_on(store.as_ref().get_range(&path.into(), range))?;
+        Ok::<_, PyObjectStoreError>(pyo3_bytes::PyBytes::new(out))
     })
 }
 
 #[pyfunction]
+#[pyo3(signature = (store, path, *, start, end=None, length=None))]
 pub(crate) fn get_range_async(
     py: Python,
     store: PyObjectStore,
     path: String,
-    start: usize,
-    end: usize,
+    start: u64,
+    end: Option<u64>,
+    length: Option<u64>,
 ) -> PyResult<Bound<PyAny>> {
+    let range = params_to_range(start, end, length)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let out = store
             .as_ref()
-            .get_range(&path.into(), start..end)
+            .get_range(&path.into(), range)
             .await
             .map_err(PyObjectStoreError::ObjectStoreError)?;
-        Ok(PyArrowBuffer::new(Buffer::from_bytes(out.into())))
+        Ok(pyo3_bytes::PyBytes::new(out))
     })
 }
 
+fn params_to_range(
+    start: u64,
+    end: Option<u64>,
+    length: Option<u64>,
+) -> PyObjectStoreResult<Range<u64>> {
+    match (end, length) {
+        (Some(_), Some(_)) => {
+            Err(PyValueError::new_err("end and length cannot both be non-None.").into())
+        }
+        (None, None) => Err(PyValueError::new_err("Either end or length must be non-None.").into()),
+        (Some(end), None) => validate_range(start..end),
+        (None, Some(length)) => validate_range(start..start + length),
+    }
+}
+
 #[pyfunction]
+#[pyo3(signature = (store, path, *, starts, ends=None, lengths=None))]
 pub(crate) fn get_ranges(
     py: Python,
     store: PyObjectStore,
     path: String,
-    starts: Vec<usize>,
-    ends: Vec<usize>,
-) -> PyObjectStoreResult<Vec<PyArrowBuffer>> {
+    starts: Vec<u64>,
+    ends: Option<Vec<u64>>,
+    lengths: Option<Vec<u64>>,
+) -> PyObjectStoreResult<Vec<pyo3_bytes::PyBytes>> {
     let runtime = get_runtime(py)?;
-    let ranges = starts
-        .into_iter()
-        .zip(ends)
-        .map(|(start, end)| start..end)
-        .collect::<Vec<_>>();
+    let ranges = params_to_ranges(starts, ends, lengths)?;
     py.allow_threads(|| {
         let out = runtime.block_on(store.as_ref().get_ranges(&path.into(), &ranges))?;
-        Ok::<_, PyObjectStoreError>(
-            out.into_iter()
-                .map(|buf| PyArrowBuffer::new(Buffer::from_bytes(buf.into())))
-                .collect(),
-        )
+        Ok::<_, PyObjectStoreError>(out.into_iter().map(|buf| buf.into()).collect())
     })
 }
 
 #[pyfunction]
+#[pyo3(signature = (store, path, *, starts, ends=None, lengths=None))]
 pub(crate) fn get_ranges_async(
     py: Python,
     store: PyObjectStore,
     path: String,
-    starts: Vec<usize>,
-    ends: Vec<usize>,
+    starts: Vec<u64>,
+    ends: Option<Vec<u64>>,
+    lengths: Option<Vec<u64>>,
 ) -> PyResult<Bound<PyAny>> {
-    let ranges = starts
-        .into_iter()
-        .zip(ends)
-        .map(|(start, end)| start..end)
-        .collect::<Vec<_>>();
+    let ranges = params_to_ranges(starts, ends, lengths)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let out = store
             .as_ref()
@@ -452,7 +461,7 @@ pub(crate) fn get_ranges_async(
             .map_err(PyObjectStoreError::ObjectStoreError)?;
         Ok(out
             .into_iter()
-            .map(|buf| PyArrowBuffer::new(Buffer::from_bytes(buf.into())))
+            .map(pyo3_bytes::PyBytes::new)
             .collect::<Vec<_>>())
     })
 }
@@ -700,4 +709,51 @@ mod tests {
         // Check that the data matches the original test data
         assert_eq!(result_data, "data");
     }
+}
+fn params_to_ranges(
+    starts: Vec<u64>,
+    ends: Option<Vec<u64>>,
+    lengths: Option<Vec<u64>>,
+) -> PyObjectStoreResult<Vec<Range<u64>>> {
+    match (ends, lengths) {
+        (Some(_), Some(_)) => {
+            Err(PyValueError::new_err("ends and lengths cannot both be non-None.").into())
+        }
+        (None, None) => {
+            Err(PyValueError::new_err("Either ends or lengths must be non-None.").into())
+        }
+        (Some(ends), None) => starts
+            .into_iter()
+            .zip(ends)
+            .map(|(start, end)| start..end)
+            .map(validate_range)
+            .collect(),
+        (None, Some(lengths)) => starts
+            .into_iter()
+            .zip(lengths)
+            .map(|(start, length)| start..start + length)
+            .map(validate_range)
+            .collect(),
+    }
+}
+
+fn validate_range(r: Range<u64>) -> PyObjectStoreResult<Range<u64>> {
+    if r.end <= r.start {
+        return Err(PyValueError::new_err(format!(
+            "Invalid range requested, start: {} end: {}",
+            r.start, r.end
+        ))
+        .into());
+    }
+
+    if (r.end - r.start) > usize::MAX as u64 {
+        return Err(PyValueError::new_err(format!(
+            "Range {} is larger than system memory limit {}",
+            r.start,
+            usize::MAX
+        ))
+        .into());
+    }
+
+    Ok(r)
 }

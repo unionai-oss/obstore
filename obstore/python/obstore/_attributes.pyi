@@ -1,6 +1,12 @@
-from typing import Dict, Literal
+import sys
+from typing import Literal
 
-Attribute = (
+if sys.version_info >= (3, 10):
+    from typing import TypeAlias
+else:
+    from typing_extensions import TypeAlias
+
+Attribute: TypeAlias = (
     Literal[
         "Content-Disposition",
         "Content-Encoding",
@@ -37,7 +43,7 @@ Attribute = (
 Any other string key specifies a user-defined metadata field for the object.
 """
 
-Attributes = Dict[Attribute, str]
+Attributes: TypeAlias = dict[Attribute, str]
 """Additional attributes of an object
 
 Attributes can be specified in [`put`][obstore.put]/[`put_async`][obstore.put_async] and

@@ -7,9 +7,11 @@ use pyo3::{create_exception, DowncastError};
 use thiserror::Error;
 
 // Base exception
+// Note that this is named `BaseError` instead of `ObstoreError` to not leak the name "obstore" to
+// other Rust-Python libraries using pyo3-object_store.
 create_exception!(
     pyo3_object_store,
-    ObstoreError,
+    BaseError,
     pyo3::exceptions::PyException,
     "The base Python-facing exception from which all other errors subclass."
 );
@@ -18,67 +20,67 @@ create_exception!(
 create_exception!(
     pyo3_object_store,
     GenericError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::Generic]."
 );
 create_exception!(
     pyo3_object_store,
     NotFoundError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::NotFound]."
 );
 create_exception!(
     pyo3_object_store,
     InvalidPathError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::InvalidPath]."
 );
 create_exception!(
     pyo3_object_store,
     JoinError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::JoinError]."
 );
 create_exception!(
     pyo3_object_store,
     NotSupportedError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::NotSupported]."
 );
 create_exception!(
     pyo3_object_store,
     AlreadyExistsError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::AlreadyExists]."
 );
 create_exception!(
     pyo3_object_store,
     PreconditionError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::Precondition]."
 );
 create_exception!(
     pyo3_object_store,
     NotModifiedError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::NotModified]."
 );
 create_exception!(
     pyo3_object_store,
     PermissionDeniedError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::PermissionDenied]."
 );
 create_exception!(
     pyo3_object_store,
     UnauthenticatedError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::Unauthenticated]."
 );
 create_exception!(
     pyo3_object_store,
     UnknownConfigurationKeyError,
-    ObstoreError,
+    BaseError,
     "A Python-facing exception wrapping [object_store::Error::UnknownConfigurationKey]."
 );
 
@@ -107,43 +109,51 @@ impl From<PyObjectStoreError> for PyErr {
                 object_store::Error::Generic {
                     store: _,
                     source: _,
-                } => GenericError::new_err(err.to_string()),
+                } => GenericError::new_err(print_with_debug(err)),
                 object_store::Error::NotFound { path: _, source: _ } => {
-                    PyFileNotFoundError::new_err(err.to_string())
+                    PyFileNotFoundError::new_err(print_with_debug(err))
                 }
                 object_store::Error::InvalidPath { source: _ } => {
-                    InvalidPathError::new_err(err.to_string())
+                    InvalidPathError::new_err(print_with_debug(err))
                 }
-                object_store::Error::JoinError { source: _ } => JoinError::new_err(err.to_string()),
+                object_store::Error::JoinError { source: _ } => {
+                    JoinError::new_err(print_with_debug(err))
+                }
                 object_store::Error::NotSupported { source: _ } => {
-                    NotSupportedError::new_err(err.to_string())
+                    NotSupportedError::new_err(print_with_debug(err))
                 }
                 object_store::Error::AlreadyExists { path: _, source: _ } => {
-                    AlreadyExistsError::new_err(err.to_string())
+                    AlreadyExistsError::new_err(print_with_debug(err))
                 }
                 object_store::Error::Precondition { path: _, source: _ } => {
-                    PreconditionError::new_err(err.to_string())
+                    PreconditionError::new_err(print_with_debug(err))
                 }
                 object_store::Error::NotModified { path: _, source: _ } => {
-                    NotModifiedError::new_err(err.to_string())
+                    NotModifiedError::new_err(print_with_debug(err))
                 }
                 object_store::Error::NotImplemented => {
-                    PyNotImplementedError::new_err(err.to_string())
+                    PyNotImplementedError::new_err(print_with_debug(err))
                 }
                 object_store::Error::PermissionDenied { path: _, source: _ } => {
-                    PermissionDeniedError::new_err(err.to_string())
+                    PermissionDeniedError::new_err(print_with_debug(err))
                 }
                 object_store::Error::Unauthenticated { path: _, source: _ } => {
-                    UnauthenticatedError::new_err(err.to_string())
+                    UnauthenticatedError::new_err(print_with_debug(err))
                 }
                 object_store::Error::UnknownConfigurationKey { store: _, key: _ } => {
-                    UnknownConfigurationKeyError::new_err(err.to_string())
+                    UnknownConfigurationKeyError::new_err(print_with_debug(err))
                 }
-                _ => GenericError::new_err(err.to_string()),
+                _ => GenericError::new_err(print_with_debug(err)),
             },
-            PyObjectStoreError::IOError(err) => PyIOError::new_err(err.to_string()),
+            PyObjectStoreError::IOError(err) => PyIOError::new_err(err),
         }
     }
+}
+
+fn print_with_debug(err: &object_store::Error) -> String {
+    // #? gives "pretty-printing" for debug
+    // https://doc.rust-lang.org/std/fmt/trait.Debug.html
+    format!("{err}\n\nDebug source:\n{err:#?}")
 }
 
 impl<'a, 'py> From<DowncastError<'a, 'py>> for PyObjectStoreError {
@@ -157,3 +167,27 @@ impl<'a, 'py> From<DowncastError<'a, 'py>> for PyObjectStoreError {
 
 /// A type wrapper around `Result<T, PyObjectStoreError>`.
 pub type PyObjectStoreResult<T> = Result<T, PyObjectStoreError>;
+
+/// A specialized `Error` for object store-related errors
+///
+/// Vendored from upstream to handle our vendored URL parsing
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ParseUrlError {
+    #[error(
+        "Unknown url scheme cannot be parsed into storage location: {}",
+        scheme
+    )]
+    UnknownUrlScheme { scheme: String },
+
+    #[error("URL did not match any known pattern for scheme: {}", url)]
+    UrlNotRecognised { url: String },
+}
+
+impl From<ParseUrlError> for object_store::Error {
+    fn from(source: ParseUrlError) -> Self {
+        Self::Generic {
+            store: "S3",
+            source: Box::new(source),
+        }
+    }
+}
